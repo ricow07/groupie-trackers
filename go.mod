@@ -1,4 +1,4 @@
-module app
+module groupie-trackers
 
 go 1.25.0
 
