@@ -1,112 +1,142 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 )
 
-// --- MODELES ---
-type Artist struct {
-	ID           int      `json:"id"`
-	Image        string   `json:"image"`
-	Name         string   `json:"name"`
-	Members      []string `json:"members"`
-	CreationDate int      `json:"creationDate"`
-	FirstAlbum   string   `json:"firstAlbum"`
-}
-
-// --- LOGIQUE API ---
-func fetchArtists() ([]Artist, error) {
-	resp, err := http.Get("https://groupietrackers.herokuapp.com/api/artists")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var artists []Artist
-	err = json.NewDecoder(resp.Body).Decode(&artists)
-	return artists, err
-}
-
-// --- INTERFACE ---
 func main() {
+	fmt.Println("🚀 Démarrage de Groupie Trackers...")
+
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Groupie Tracker Pro")
-	myWindow.Resize(fyne.NewSize(1000, 800))
+	mainWindow := myApp.NewWindow("🎵 Groupie Trackers - Concert Explorer")
+	mainWindow.Resize(fyne.NewSize(1000, 700))
 
-	// Chargement des données au démarrage
-	artists, err := fetchArtists()
-	if err != nil {
-		fmt.Println("Erreur API:", err)
-		return
-	}
+	// Variables pour l'UI
+	artistsContainer := container.NewVBox()
 
-	// Conteneur principal pour la grille d'artistes
-	grid := container.New(layout.NewGridLayout(3))
+	// ===== ZONE DE CHARGEMENT =====
+	artistsContainer.Add(CreateLoadingWidget())
 
-	// Fonction pour remplir la grille
-	renderArtists := func(filter string) {
-		grid.Objects = nil // On nettoie
-		filter = strings.ToLower(filter)
+	// ===== ZONE DÉTAILS =====
+	detailsContainer := container.NewVBox()
+	detailsScroll := container.NewVScroll(detailsContainer)
+	detailsScroll.SetMinSize(fyne.NewSize(400, 600))
+
+	// ===== ZONE ARTISTES =====
+	artistsScroll := container.NewVScroll(artistsContainer)
+	artistsScroll.SetMinSize(fyne.NewSize(550, 600))
+
+	// Fonction pour rafraîchir la liste des artistes
+	refreshArtists := func(artists []Artist) {
+		artistsContainer.Objects = nil
+
+		if len(artists) == 0 {
+			artistsContainer.Add(widget.NewLabel("❌ Aucun artiste trouvé"))
+			return
+		}
 
 		for _, a := range artists {
-			// Filtrage simple par nom ou membre
-			match := strings.Contains(strings.ToLower(a.Name), filter)
-			for _, m := range a.Members {
-				if strings.Contains(strings.ToLower(m), filter) {
-					match = true
-				}
-			}
-
-			if match || filter == "" {
-				// Image de l'artiste
-				u, _ := storage.ParseURI(a.Image)
-				img := canvas.NewImageFromURI(u)
-				img.FillMode = canvas.ImageFillContain
-				img.SetMinSize(fyne.NewSize(200, 200))
-
-				// Carte avec infos
-				info := fmt.Sprintf("Album: %s\nAnnée: %d", a.FirstAlbum, a.CreationDate)
-				card := widget.NewCard(a.Name, info, img)
-				
-				// Bouton pour voir les détails (Action Client-Serveur)
-				btn := widget.NewButton("Voir Concerts", func() {
-					fmt.Println("Chargement des concerts pour", a.Name)
-					// Ici vous pourriez ouvrir une nouvelle fenêtre pour la Map
-				})
-				
-				item := container.NewVBox(card, btn)
-				grid.Add(item)
-			}
+			artist := a // Copie pour éviter les problèmes de pointeurs
+			card := CreateArtistCard(&artist, func(selected *Artist) {
+				// Mettre à jour la zone de détails
+				detailsContainer.Objects = nil
+				detailsContainer.Add(CreateDetailWindow(selected, myApp))
+				detailsContainer.Refresh()
+			})
+			artistsContainer.Add(card)
 		}
-		grid.Refresh()
 	}
 
-	// Barre de recherche
-	search := widget.NewEntry()
-	search.SetPlaceHolder("Rechercher un artiste ou un membre...")
+	// ===== BARRE DE RECHERCHE & FILTRES =====
+	search, periodSelect, searchBar := CreateSearchBar()
+
+	// Fonction de recherche
+	doSearch := func() {
+		query := search.Text
+		results := AllArtists
+
+		// Filtrer par recherche
+		if query != "" {
+			results = SearchArtists(query)
+		}
+
+		// Filtrer par période
+		period := periodSelect.Selected
+		switch period {
+		case "Avant 1980":
+			results = FilterByCreationDate(results, 0, 1979)
+		case "1980-1999":
+			results = FilterByCreationDate(results, 1980, 1999)
+		case "2000 et après":
+			results = FilterByCreationDate(results, 2000, 2100)
+		}
+
+		refreshArtists(results)
+	}
+
 	search.OnChanged = func(s string) {
-		renderArtists(s)
+		doSearch()
 	}
 
-	// Layout final : Recherche en haut, Grille scrollable au centre
-	scroll := container.NewVScroll(grid)
-	content := container.NewBorder(
-		container.NewVBox(widget.NewLabelWithStyle("GROUPIE TRACKER", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}), search),
-		nil, nil, nil,
-		scroll,
+	periodSelect.OnChanged = func(s string) {
+		doSearch()
+	}
+
+	// ===== BOUTON RÉINITIALISER =====
+	resetBtn := widget.NewButton("🔄 Réinitialiser", func() {
+		search.SetText("")
+		periodSelect.SetSelected("Toutes les périodes")
+		refreshArtists(AllArtists)
+	})
+
+	searchContainer := container.NewVBox(
+		searchBar,
+		resetBtn,
 	)
 
-	renderArtists("") // Premier affichage
-	myWindow.SetContent(content)
-	myWindow.ShowAndRun()
+	// ===== LAYOUT PRINCIPAL =====
+	topLayout := container.NewVBox(
+		widget.NewLabel("🎵 GROUPIE TRACKERS - Découvrez vos artistes préférés"),
+		widget.NewSeparator(),
+		searchContainer,
+	)
+
+	mainLayout := container.NewHBox(
+		artistsScroll,
+		widget.NewSeparator(),
+		detailsScroll,
+	)
+
+	fullLayout := container.NewBorder(
+		topLayout,
+		nil,
+		nil,
+		nil,
+		mainLayout,
+	)
+
+	mainWindow.SetContent(fullLayout)
+
+	// ===== CHARGEMENT DES DONNÉES =====
+	go func() {
+		fmt.Println("📡 Chargement de l'API...")
+		err := FetchAllData()
+
+		if err != nil {
+			fmt.Println("❌ Erreur API:", err)
+			artistsContainer.Objects = nil
+			artistsContainer.Add(CreateErrorWidget(err.Error()))
+			artistsContainer.Refresh()
+		} else {
+			fmt.Printf("✅ %d artistes chargés avec succès!\n", len(AllArtists))
+			refreshArtists(AllArtists)
+		}
+	}()
+
+	mainWindow.ShowAndRun()
 }
