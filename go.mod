@@ -1,4 +1,4 @@
-module TP-API
+module groupie-tracker
 
 go 1.21
 

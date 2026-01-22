@@ -2,141 +2,245 @@ package main
 
 import (
 	"fmt"
+	"groupie-tracker/api"
+	"groupie-tracker/models"
+	"groupie-tracker/services"
+	"groupie-tracker/ui"
+	"log"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
+// App représente l'application principale
+type App struct {
+	window        fyne.Window
+	apiClient     *api.Client
+	searchService *services.SearchService
+	data          *models.APIData
+	currentView   string
+
+	// Vues
+	spotifyView *ui.SpotifyView
+	mapView     *ui.MapView
+	shazamView  *ui.ShazamView
+}
+
 func main() {
-	fmt.Println("🚀 Démarrage de Groupie Trackers...")
-
 	myApp := app.New()
-	mainWindow := myApp.NewWindow("🎵 Groupie Trackers - Concert Explorer")
-	mainWindow.Resize(fyne.NewSize(1000, 700))
+	myApp.Settings().SetTheme(theme.DarkTheme())
 
-	// Variables pour l'UI
-	artistsContainer := container.NewVBox()
+	window := myApp.NewWindow("Groupie Tracker - Instagram Style")
+	window.Resize(fyne.NewSize(1200, 800))
 
-	// ===== ZONE DE CHARGEMENT =====
-	artistsContainer.Add(CreateLoadingWidget())
-
-	// ===== ZONE DÉTAILS =====
-	detailsContainer := container.NewVBox()
-	detailsScroll := container.NewVScroll(detailsContainer)
-	detailsScroll.SetMinSize(fyne.NewSize(400, 600))
-
-	// ===== ZONE ARTISTES =====
-	artistsScroll := container.NewVScroll(artistsContainer)
-	artistsScroll.SetMinSize(fyne.NewSize(550, 600))
-
-	// Fonction pour rafraîchir la liste des artistes
-	refreshArtists := func(artists []Artist) {
-		artistsContainer.Objects = nil
-
-		if len(artists) == 0 {
-			artistsContainer.Add(widget.NewLabel("❌ Aucun artiste trouvé"))
-			return
-		}
-
-		for _, a := range artists {
-			artist := a // Copie pour éviter les problèmes de pointeurs
-			card := CreateArtistCard(&artist, func(selected *Artist) {
-				// Mettre à jour la zone de détails
-				detailsContainer.Objects = nil
-				detailsContainer.Add(CreateDetailWindow(selected, myApp))
-				detailsContainer.Refresh()
-			})
-			artistsContainer.Add(card)
-		}
+	application := &App{
+		window:      window,
+		apiClient:   api.NewClient(),
+		currentView: "spotify",
 	}
 
-	// ===== BARRE DE RECHERCHE & FILTRES =====
-	search, periodSelect, searchBar := CreateSearchBar()
+	// Créer l'interface principale
+	mainUI := application.createMainUI()
+	window.SetContent(mainUI)
 
-	// Fonction de recherche
-	doSearch := func() {
-		query := search.Text
-		results := AllArtists
+	// Charger les données en arrière-plan
+	go application.loadData()
 
-		// Filtrer par recherche
-		if query != "" {
-			results = SearchArtists(query)
-		}
+	window.ShowAndRun()
+}
 
-		// Filtrer par période
-		period := periodSelect.Selected
-		switch period {
-		case "Avant 1980":
-			results = FilterByCreationDate(results, 0, 1979)
-		case "1980-1999":
-			results = FilterByCreationDate(results, 1980, 1999)
-		case "2000 et après":
-			results = FilterByCreationDate(results, 2000, 2100)
-		}
+// loadData charge toutes les données de l'API
+func (a *App) loadData() {
+	log.Println("🔄 Chargement des données...")
 
-		refreshArtists(results)
+	data, err := a.apiClient.LoadAllData()
+	if err != nil {
+		log.Printf("❌ Erreur lors du chargement: %v\n", err)
+		a.showError("Erreur de chargement des données. Veuillez vérifier votre connexion.")
+		return
 	}
 
-	search.OnChanged = func(s string) {
-		doSearch()
+	a.data = data
+	a.searchService = services.NewSearchService(data)
+
+	// Initialiser les vues
+	a.spotifyView = ui.NewSpotifyView(a.window, a.searchService, a.data)
+	a.mapView = ui.NewMapView(a.window, a.searchService, a.data)
+	a.shazamView = ui.NewShazamView(a.window, a.searchService, a.data)
+
+	log.Printf("✅ Données chargées: %d artistes\n", len(data.Artists))
+}
+
+// createMainUI crée l'interface principale
+func (a *App) createMainUI() *fyne.Container {
+	// Container pour le contenu principal
+	mainContent := container.NewStack()
+
+	// Navigation Instagram-style
+	navigation := a.createNavigation(mainContent)
+
+	// Vue par défaut (Spotify)
+	loadingLabel := widget.NewLabel("⏳ Chargement des données de l'API...")
+	loadingLabel.Alignment = fyne.TextAlignCenter
+	mainContent.Objects = []fyne.CanvasObject{
+		container.NewCenter(loadingLabel),
 	}
 
-	periodSelect.OnChanged = func(s string) {
-		doSearch()
-	}
+	// Layout principal avec navigation à gauche
+	return container.NewBorder(
+		nil, nil,
+		navigation,
+		nil,
+		mainContent,
+	)
+}
 
-	// ===== BOUTON RÉINITIALISER =====
-	resetBtn := widget.NewButton("🔄 Réinitialiser", func() {
-		search.SetText("")
-		periodSelect.SetSelected("Toutes les périodes")
-		refreshArtists(AllArtists)
+// createNavigation crée la barre de navigation latérale
+func (a *App) createNavigation(mainContent *fyne.Container) *fyne.Container {
+	// Logo/Titre
+	title := widget.NewLabelWithStyle(
+		"Groupie Tracker",
+		fyne.TextAlignCenter,
+		fyne.TextStyle{Bold: true},
+	)
+
+	separator1 := widget.NewSeparator()
+
+	// Boutons de navigation
+	spotifyBtn := widget.NewButton("", func() {
+		a.switchView("spotify", mainContent)
 	})
+	spotifyBtn.Icon = theme.MediaMusicIcon()
+	spotifyBtn.Importance = widget.HighImportance
 
-	searchContainer := container.NewVBox(
-		searchBar,
-		resetBtn,
+	spotifyLabel := widget.NewLabel("Spotify")
+	spotifyLabel.Alignment = fyne.TextAlignCenter
+
+	mapBtn := widget.NewButton("", func() {
+		a.switchView("map", mainContent)
+	})
+	mapBtn.Icon = theme.HomeIcon()
+	mapBtn.Importance = widget.HighImportance
+
+	mapLabel := widget.NewLabel("Carte")
+	mapLabel.Alignment = fyne.TextAlignCenter
+
+	shazamBtn := widget.NewButton("", func() {
+		a.switchView("shazam", mainContent)
+	})
+	shazamBtn.Icon = theme.MediaRecordIcon()
+	shazamBtn.Importance = widget.HighImportance
+
+	shazamLabel := widget.NewLabel("Shazam")
+	shazamLabel.Alignment = fyne.TextAlignCenter
+
+	// Organisation verticale des boutons
+	spotifyContainer := container.NewVBox(
+		container.NewCenter(spotifyBtn),
+		spotifyLabel,
 	)
 
-	// ===== LAYOUT PRINCIPAL =====
-	topLayout := container.NewVBox(
-		widget.NewLabel("🎵 GROUPIE TRACKERS - Découvrez vos artistes préférés"),
+	mapContainer := container.NewVBox(
+		container.NewCenter(mapBtn),
+		mapLabel,
+	)
+
+	shazamContainer := container.NewVBox(
+		container.NewCenter(shazamBtn),
+		shazamLabel,
+	)
+
+	separator2 := widget.NewSeparator()
+
+	// Informations en bas
+	infoLabel := widget.NewLabel("API: Groupie Tracker")
+	infoLabel.Alignment = fyne.TextAlignCenter
+	infoLabel.TextStyle = fyne.TextStyle{Italic: true}
+
+	// Container de navigation
+	navContent := container.NewVBox(
+		container.NewPadded(title),
+		separator1,
+		layout.NewSpacer(),
+		container.NewPadded(spotifyContainer),
 		widget.NewSeparator(),
-		searchContainer,
-	)
-
-	mainLayout := container.NewHBox(
-		artistsScroll,
+		container.NewPadded(mapContainer),
 		widget.NewSeparator(),
-		detailsScroll,
+		container.NewPadded(shazamContainer),
+		layout.NewSpacer(),
+		separator2,
+		container.NewPadded(infoLabel),
 	)
 
-	fullLayout := container.NewBorder(
-		topLayout,
-		nil,
-		nil,
-		nil,
-		mainLayout,
-	)
+	// Définir une largeur fixe pour la navigation
+	navContainer := container.NewBorder(nil, nil, nil, nil, navContent)
+	navContainer.Resize(fyne.NewSize(200, 0))
 
-	mainWindow.SetContent(fullLayout)
+	return container.NewPadded(navContainer)
+}
 
-	// ===== CHARGEMENT DES DONNÉES =====
-	go func() {
-		fmt.Println("📡 Chargement de l'API...")
-		err := FetchAllData()
+// switchView change de vue
+func (a *App) switchView(view string, mainContent *fyne.Container) {
+	a.currentView = view
 
-		if err != nil {
-			fmt.Println("❌ Erreur API:", err)
-			artistsContainer.Objects = nil
-			artistsContainer.Add(CreateErrorWidget(err.Error()))
-			artistsContainer.Refresh()
-		} else {
-			fmt.Printf("✅ %d artistes chargés avec succès!\n", len(AllArtists))
-			refreshArtists(AllArtists)
+	// Vérifier si les données sont chargées
+	if a.data == nil {
+		loadingLabel := widget.NewLabel("⏳ Chargement des données...")
+		loadingLabel.Alignment = fyne.TextAlignCenter
+		mainContent.Objects = []fyne.CanvasObject{
+			container.NewCenter(loadingLabel),
 		}
-	}()
+		mainContent.Refresh()
+		return
+	}
 
-	mainWindow.ShowAndRun()
+	var newView fyne.CanvasObject
+
+	switch view {
+	case "spotify":
+		if a.spotifyView == nil {
+			a.spotifyView = ui.NewSpotifyView(a.window, a.searchService, a.data)
+		}
+		newView = a.spotifyView.Render()
+
+	case "map":
+		if a.mapView == nil {
+			a.mapView = ui.NewMapView(a.window, a.searchService, a.data)
+		}
+		newView = a.mapView.Render()
+
+	case "shazam":
+		if a.shazamView == nil {
+			a.shazamView = ui.NewShazamView(a.window, a.searchService, a.data)
+		}
+		newView = a.shazamView.Render()
+
+	default:
+		newView = container.NewCenter(widget.NewLabel("Vue non disponible"))
+	}
+
+	mainContent.Objects = []fyne.CanvasObject{newView}
+	mainContent.Refresh()
+
+	log.Printf("📱 Vue changée: %s\n", view)
+}
+
+// showError affiche un message d'erreur
+func (a *App) showError(message string) {
+	dialog := widget.NewModalPopUp(
+		container.NewVBox(
+			widget.NewLabel("❌ Erreur"),
+			widget.NewSeparator(),
+			widget.NewLabel(message),
+			widget.NewButton("OK", func() {}),
+		),
+		a.window.Canvas(),
+	)
+
+	dialog.Show()
+	fmt.Println(message)
 }
